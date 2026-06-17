@@ -37,11 +37,25 @@ class Part:
     length: float  # mm
     width: float  # mm
     curvature_radius: float  # mm (radius of the rounded contour)
+    shape_type: str = "irregular"  # "rectangle", "rounded", "irregular"
+    shape_efficiency: float = 0.7  # For irregular shapes, approximate % of bounding box
+    
+    @property
+    def bounding_box_area(self) -> float:
+        """Bounding box area that the part occupies."""
+        return self.length * self.width
     
     @property
     def footprint_area(self) -> float:
-        """Approximate area needed for the part footprint."""
-        return self.length * self.width
+        """Actual area needed for the part footprint including curved sections."""
+        if self.shape_type == "rectangle":
+            return self.length * self.width
+        elif self.shape_type == "rounded":
+            # Approximate area with rounded corners
+            return self.length * self.width * 0.9
+        else:  # irregular
+            # Use efficiency factor for irregular curved shapes
+            return self.length * self.width * self.shape_efficiency
 
 
 @dataclass
@@ -68,8 +82,9 @@ class CompositeManuSimulation:
         
     def calculate_utilization(self) -> dict:
         """Calculate material utilization metrics."""
-        utilization_rate = (self.part.footprint_area / self.sheet.area) * 100
-        waste_area = self.sheet.area - self.part.footprint_area
+        # Use bounding box for actual material needed from sheet
+        utilization_rate = (self.part.bounding_box_area / self.sheet.area) * 100
+        waste_area = self.sheet.area - self.part.bounding_box_area
         waste_percentage = (waste_area / self.sheet.area) * 100
         
         return {
@@ -112,7 +127,7 @@ class CompositeManuSimulation:
         if parts_per_sheet < 1:
             parts_per_sheet = 1
         
-        total_part_area = self.part.footprint_area * parts_per_sheet
+        total_part_area = self.part.bounding_box_area * parts_per_sheet
         utilization = (total_part_area / self.sheet.area) * 100
         
         return {
@@ -140,9 +155,38 @@ class CompositeManuSimulation:
         # Draw part (centered on sheet)
         part_x = (self.sheet.width - self.part.width) / 2
         part_y = (self.sheet.height - self.part.length) / 2
-        part_rect = Rectangle((part_x, part_y), self.part.width, self.part.length,
-                              linewidth=2, edgecolor='blue', facecolor='blue', alpha=0.5)
-        ax1.add_patch(part_rect)
+        
+        # Draw bounding box
+        bbox_rect = Rectangle((part_x, part_y), self.part.width, self.part.length,
+                              linewidth=2, edgecolor='blue', facecolor='none', 
+                              linestyle='--', alpha=0.7, label='Bounding Box')
+        ax1.add_patch(bbox_rect)
+        
+        # Draw actual irregular part shape
+        if self.part.shape_type == "irregular":
+            # Create an irregular curved shape to represent the actual part
+            theta = np.linspace(0, 2*np.pi, 100)
+            # Create an organic irregular shape using multiple frequency components
+            r_variation = (0.5 + 0.3*np.sin(3*theta) + 0.15*np.cos(5*theta) + 0.1*np.sin(7*theta))
+            x_shape = part_x + self.part.width/2 + (self.part.width/2 * r_variation * np.cos(theta))
+            y_shape = part_y + self.part.length/2 + (self.part.length/2 * r_variation * np.sin(theta))
+            
+            ax1.fill(x_shape, y_shape, color='blue', alpha=0.5, label='Actual Part')
+            ax1.plot(x_shape, y_shape, color='darkblue', linewidth=2)
+        elif self.part.shape_type == "rounded":
+            # Simple rounded rectangle
+            part_rect = Rectangle((part_x, part_y), self.part.width, self.part.length,
+                                  linewidth=2, edgecolor='blue', facecolor='blue', 
+                                  alpha=0.5, label='Actual Part')
+            ax1.add_patch(part_rect)
+        else:
+            # Regular rectangle
+            part_rect = Rectangle((part_x, part_y), self.part.width, self.part.length,
+                                  linewidth=2, edgecolor='blue', facecolor='blue', 
+                                  alpha=0.5, label='Actual Part')
+            ax1.add_patch(part_rect)
+        
+        ax1.legend(loc='upper right', fontsize=8)
         
         # Add waste annotation
         metrics = self.calculate_utilization()
@@ -182,9 +226,23 @@ class CompositeManuSimulation:
                     x = col * self.part.width
                     y = row * self.part.length
                     if x + self.part.width <= self.sheet.width and y + self.part.length <= self.sheet.height:
-                        part_rect = Rectangle((x, y), self.part.width, self.part.length,
-                                             linewidth=1, edgecolor='blue', facecolor='blue', alpha=0.5)
-                        ax2.add_patch(part_rect)
+                        # Draw bounding box
+                        bbox = Rectangle((x, y), self.part.width, self.part.length,
+                                        linewidth=1, edgecolor='blue', facecolor='none', 
+                                        linestyle='--', alpha=0.5)
+                        ax2.add_patch(bbox)
+                        
+                        # Draw irregular shape
+                        if self.part.shape_type == "irregular":
+                            theta = np.linspace(0, 2*np.pi, 50)
+                            r_variation = (0.5 + 0.3*np.sin(3*theta) + 0.15*np.cos(5*theta) + 0.1*np.sin(7*theta))
+                            x_shape = x + self.part.width/2 + (self.part.width/2 * r_variation * np.cos(theta))
+                            y_shape = y + self.part.length/2 + (self.part.length/2 * r_variation * np.sin(theta))
+                            ax2.fill(x_shape, y_shape, color='blue', alpha=0.5)
+                        else:
+                            part_rect = Rectangle((x, y), self.part.width, self.part.length,
+                                                 linewidth=1, edgecolor='blue', facecolor='blue', alpha=0.5)
+                            ax2.add_patch(part_rect)
             
             opt_text = f"Waste: {nesting['waste_percentage']:.1f}%\nUtilization: {nesting['utilization_rate']:.1f}%\nImprovement: +{nesting['improvement']:.1f}%"
         else:
@@ -226,7 +284,9 @@ class CompositeManuSimulation:
         metrics = self.calculate_utilization()
         print("CURRENT MATERIAL UTILIZATION:")
         print(f"  Sheet Area: {metrics['sheet_area_mm2']:,.0f} mm² ({metrics['sheet_area_mm2']/1_000_000:.3f} m²)")
-        print(f"  Part Area: {metrics['part_area_mm2']:,.0f} mm² ({metrics['part_area_mm2']/1_000_000:.3f} m²)")
+        print(f"  Part Bounding Box: {self.part.bounding_box_area:,.0f} mm² ({self.part.bounding_box_area/1_000_000:.3f} m²)")
+        print(f"  Actual Part Area: {self.part.footprint_area:,.0f} mm² ({self.part.footprint_area/1_000_000:.3f} m²)")
+        print(f"  Part Shape Efficiency: {self.part.shape_efficiency*100:.0f}% of bounding box")
         print(f"  Waste Area: {metrics['waste_area_mm2']:,.0f} mm² ({metrics['waste_area_mm2']/1_000_000:.3f} m²)")
         print(f"  Utilization Rate: {metrics['utilization_rate']:.2f}%")
         print(f"  Waste Rate: {metrics['waste_percentage']:.2f}%")
@@ -280,6 +340,16 @@ def main():
     part_length = st.sidebar.number_input("Part Length (mm)", value=400, min_value=50, max_value=3000, step=10)
     curvature_radius = st.sidebar.number_input("Curvature Radius (mm)", value=150, min_value=10, max_value=1000, step=10)
     
+    shape_type = st.sidebar.selectbox("Part Shape", ["irregular", "rounded", "rectangle"], 
+                                      help="Select the shape of your part")
+    
+    if shape_type == "irregular":
+        shape_efficiency = st.sidebar.slider("Shape Efficiency (%)", 
+                                            min_value=30, max_value=100, value=70, step=5,
+                                            help="What % of the bounding box does your irregular part actually fill?") / 100
+    else:
+        shape_efficiency = 0.9 if shape_type == "rounded" else 1.0
+    
     st.sidebar.subheader("Forming Table")
     table_width = st.sidebar.number_input("Table Width (mm)", value=1220, min_value=100, max_value=5000, step=10)
     table_length = st.sidebar.number_input("Table Length (mm)", value=2440, min_value=100, max_value=5000, step=10)
@@ -291,7 +361,8 @@ def main():
     
     # Create objects
     sheet = DeclammSheet(width=sheet_width, height=sheet_height, cost_per_sqm=cost_per_sqm)
-    part = Part(length=part_length, width=part_width, curvature_radius=curvature_radius)
+    part = Part(length=part_length, width=part_width, curvature_radius=curvature_radius, 
+                shape_type=shape_type, shape_efficiency=shape_efficiency)
     table = FormingTable(length=table_length, width=table_width, temperature=temperature, pressure=pressure)
     
     # Create simulation
@@ -334,7 +405,9 @@ def main():
         with col1:
             st.markdown("#### Material Utilization")
             st.write(f"**Sheet Area:** {metrics['sheet_area_mm2']:,.0f} mm² ({metrics['sheet_area_mm2']/1_000_000:.3f} m²)")
-            st.write(f"**Part Area:** {metrics['part_area_mm2']:,.0f} mm² ({metrics['part_area_mm2']/1_000_000:.3f} m²)")
+            st.write(f"**Part Bounding Box:** {part.bounding_box_area:,.0f} mm² ({part.bounding_box_area/1_000_000:.3f} m²)")
+            st.write(f"**Actual Part Area:** {part.footprint_area:,.0f} mm² ({part.footprint_area/1_000_000:.3f} m²)")
+            st.write(f"**Shape Efficiency:** {part.shape_efficiency*100:.0f}%")
             st.write(f"**Waste Area:** {metrics['waste_area_mm2']:,.0f} mm² ({metrics['waste_area_mm2']/1_000_000:.3f} m²)")
             st.write(f"**Utilization Rate:** {metrics['utilization_rate']:.2f}%")
             st.write(f"**Waste Rate:** {metrics['waste_percentage']:.2f}%")
